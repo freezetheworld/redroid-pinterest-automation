@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+import argparse
+import base64
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DEFAULT_SERIAL = os.environ.get('ANDROID_SERIAL', 'emulator-5554')
+ADB_IME = 'com.android.adbkeyboard/.AdbIME'
+LATIN_IME = 'com.android.inputmethod.latin/.LatinIME'
+
+PINTEREST_TABS = {
+    'home':   (98,  1162),
+    'search': (229, 1165),
+    'create': (360, 1165),
+    'inbox':  (491, 1162),
+    'saved':  (621, 1162),
+}
+
+SAVED_SUB_TABS = {
+    'pins':     (180, 110),
+    'boards':   (359, 110),
+    'collages': (540, 110),
+}
+
+PINNER_PACKAGE = 'com.pinterest'
+PINNER_ACTIVITIES = {
+    'main': '.activityLibrary.activity.task.activity.MainActivity',
+    'launch': '.activity.PinterestActivity',
+}
+
+
+def run(cmd, check=True, capture=True):
+    if capture:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    else:
+        res = subprocess.run(cmd)
+    if check and res.returncode != 0:
+        if capture:
+            raise SystemExit(f"command failed ({res.returncode}): {' '.join(shlex.quote(x) for x in cmd)}\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}")
+        raise SystemExit(res.returncode)
+    return res
+
+
+def adb(serial, *args, check=True, capture=True):
+    return run(['adb', '-s', serial, *args], check=check, capture=capture)
+
+
+def adb_shell(serial, command, check=True):
+    return adb(serial, 'shell', command, check=check, capture=True)
+
+
+def current_ime(serial):
+    return adb_shell(serial, 'settings get secure default_input_method').stdout.strip()
+
+
+def set_ime(serial, ime):
+    adb_shell(serial, f'ime set {shlex.quote(ime)}')
+
+
+def ensure_adb_keyboard(serial):
+    ime_list = adb_shell(serial, 'ime list -s').stdout
+    if ADB_IME not in ime_list:
+        raise SystemExit(f'{ADB_IME} is not installed/enabled on {serial}')
+
+
+def send_broadcast(serial, action, extras=None):
+    pieces = ['am', 'broadcast', '-a', action]
+    for kind, key, value in extras or []:
+        pieces += [kind, key, value]
+    return adb(serial, 'shell', ' '.join(shlex.quote(p) for p in pieces))
+
+
+def cmd_text(serial, text, keep_ime=False):
+    ensure_adb_keyboard(serial)
+    old_ime = current_ime(serial)
+    try:
+        set_ime(serial, ADB_IME)
+        payload = base64.b64encode(text.encode('utf-8')).decode('ascii')
+        out = send_broadcast(serial, 'ADB_INPUT_B64', [('--es', 'msg', payload)]).stdout.strip()
+        print(out)
+    finally:
+        if not keep_ime and old_ime and old_ime != ADB_IME:
+            set_ime(serial, old_ime)
+
+
+def cmd_clear(serial, keep_ime=False):
+    ensure_adb_keyboard(serial)
+    old_ime = current_ime(serial)
+    try:
+        set_ime(serial, ADB_IME)
+        out = send_broadcast(serial, 'ADB_CLEAR_TEXT').stdout.strip()
+        print(out)
+    finally:
+        if not keep_ime and old_ime and old_ime != ADB_IME:
+            set_ime(serial, old_ime)
+
+
+def cmd_key(serial, code):
+    out = adb_shell(serial, f'input keyevent {code}').stdout.strip()
+    print(out)
+
+
+def cmd_editor(serial, code):
+    out = send_broadcast(serial, 'ADB_EDITOR_CODE', [('--ei', 'code', str(code))]).stdout.strip()
+    print(out)
+
+
+def cmd_tap(serial, x, y):
+    print(adb_shell(serial, f'input tap {x} {y}').stdout.strip())
+
+
+def cmd_swipe(serial, x1, y1, x2, y2, ms):
+    print(adb_shell(serial, f'input swipe {x1} {y1} {x2} {y2} {ms}').stdout.strip())
+
+
+def cmd_screenshot(serial, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('wb') as f:
+        res = subprocess.run(['adb', '-s', serial, 'exec-out', 'screencap', '-p'], stdout=f, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        raise SystemExit(res.stderr.decode())
+    print(str(path))
+
+
+def cmd_activity(serial):
+    out = adb_shell(serial, "dumpsys activity activities | grep -A2 mResumedActivity").stdout.strip()
+    print(out)
+
+
+def cmd_open(serial, package, activity=None):
+    if activity:
+        component = f'{package}/{activity}'
+    else:
+        resolved = adb_shell(serial, f'cmd package resolve-activity --brief {shlex.quote(package)}').stdout.strip().splitlines()
+        component = next((line.strip() for line in reversed(resolved) if '/' in line), None)
+        if not component:
+            raise SystemExit(f'could not resolve launch activity for {package}')
+    out = adb_shell(serial, f'am start -n {shlex.quote(component)}').stdout.strip()
+    print(out)
+
+
+def cmd_disable_animations(serial):
+    for key in ['window_animation_scale', 'transition_animation_scale', 'animator_duration_scale']:
+        adb_shell(serial, f'settings put global {key} 0')
+    vals = {
+        'window': adb_shell(serial, 'settings get global window_animation_scale').stdout.strip(),
+        'transition': adb_shell(serial, 'settings get global transition_animation_scale').stdout.strip(),
+        'animator': adb_shell(serial, 'settings get global animator_duration_scale').stdout.strip(),
+    }
+    print(json.dumps(vals))
+
+
+def cmd_ime(serial, mode):
+    if mode == 'current':
+        print(current_ime(serial))
+    elif mode == 'adb':
+        ensure_adb_keyboard(serial)
+        set_ime(serial, ADB_IME)
+        print(ADB_IME)
+    elif mode == 'latin':
+        set_ime(serial, LATIN_IME)
+        print(LATIN_IME)
+    elif mode == 'list':
+        print(adb_shell(serial, 'ime list -a').stdout)
+
+
+# ── Pinterest-specific commands ──────────────────────────────────────────
+
+def pinter_ensure_foreground(serial):
+    """Make sure Pinterest is running and in foreground."""
+    raw = adb_shell(serial, "dumpsys activity activities | grep mResumedActivity").stdout
+    if PINNER_PACKAGE not in raw:
+        cmd_open(serial, PINNER_PACKAGE, PINNER_ACTIVITIES['launch'])
+        time.sleep(3)
+
+
+def pinter_tap_tab(serial, tab_name):
+    """Tap a bottom nav tab by name."""
+    if tab_name not in PINTEREST_TABS:
+        raise SystemExit(f'unknown Pinterest tab: {tab_name}.  Options: {", ".join(PINTEREST_TABS)}')
+    x, y = PINTEREST_TABS[tab_name]
+    cmd_tap(serial, x, y)
+    time.sleep(1.5)
+
+
+def pinter_tap_saved_sub(serial, sub_tab):
+    """Tap Pins / Boards / Collages within the Saved tab."""
+    if sub_tab not in SAVED_SUB_TABS:
+        raise SystemExit(f'unknown Saved sub-tab: {sub_tab}.  Options: {", ".join(SAVED_SUB_TABS)}')
+    x, y = SAVED_SUB_TABS[sub_tab]
+    cmd_tap(serial, x, y)
+    time.sleep(1)
+
+
+def pinter_calibrate_tab(serial, tab_name):
+    """Take a screenshot to help the user identify correct tab coordinates."""
+    path = f'/root/redroid-screens/calibrate-tab-{tab_name}.png'
+    cmd_screenshot(serial, path)
+    print(f'MEDIA:{path}')
+    print(f'Tab "{tab_name}" default coords: {PINTEREST_TABS.get(tab_name, "??")}')
+    print('If incorrect, use --x and --y to override')
+
+
+def pinter_cmd(serial, args):
+    if args.pinter_cmd == 'open':
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, 'home')
+        cmd_screenshot(serial, args.screenshot or '/root/redroid-screens/pinter-home.png')
+        return
+
+    if args.pinter_cmd == 'close':
+        adb_shell(serial, f'am force-stop {PINNER_PACKAGE}')
+        print(f'force-stopped {PINNER_PACKAGE}')
+        return
+
+    if args.pinter_cmd == 'tab':
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, args.tab)
+        if args.query:
+            time.sleep(0.5)
+            cmd_tap(serial, args.x or 360, args.y or 118)
+            time.sleep(0.5)
+            cmd_clear(serial)
+            time.sleep(0.3)
+            cmd_text(serial, args.query)
+            time.sleep(1)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        return
+
+    if args.pinter_cmd == 'query':
+        pinter_ensure_foreground(serial)
+        # assume we're already on search tab with field in focus
+        time.sleep(0.5)
+        cmd_tap(serial, args.x or 360, args.y or 118)
+        time.sleep(0.5)
+        cmd_clear(serial)
+        time.sleep(0.3)
+        cmd_text(serial, args.query)
+        time.sleep(1)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        return
+
+    if args.pinter_cmd == 'search':
+        """Full search flow: tap search tab → type query → submit with Enter."""
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, 'search')
+        time.sleep(1)
+        cmd_tap(serial, args.x or 360, args.y or 118)
+        time.sleep(0.5)
+        # Use --no-submit to keep suggestions visible (for autocomplete)
+        if not getattr(args, 'no_submit', False):
+            cmd_clear(serial)
+            time.sleep(0.3)
+            cmd_text(serial, args.query)
+            time.sleep(0.5)
+            cmd_key(serial, 66)  # Enter to submit search
+            time.sleep(3)
+        else:
+            cmd_text(serial, args.query)
+            time.sleep(2)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        return
+
+    if args.pinter_cmd == 'open-pin':
+        """Search → submit → open the first result from the image grid."""
+        if args.query:
+            pinter_cmd(serial, argparse.Namespace(
+                pinter_cmd='search', query=args.query,
+                x=args.x, y=args.y, screenshot=None, no_submit=False
+            ))
+        # Search results are a 2-column grid on 720x1280.
+        # Left col ~x=192, Right col ~x=540
+        row_y = {1: 450, 2: 650, 3: 850, 4: 1050}.get(args.nth if args.nth else 1, 450)
+        col_x = 192 if (args.nth or 1) % 2 == 1 else 540
+        cmd_tap(serial, col_x, row_y)
+        time.sleep(3)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        return
+
+    if args.pinter_cmd == 'save':
+        """Save the currently open pin via the action menu."""
+        # Step 1: tap top-right area (~660, 70) to open the action menu
+        cmd_tap(serial, 660, 70)
+        time.sleep(1.5)
+        # Step 2: tap "Save" option in the popup menu (~149, 864)
+        cmd_tap(serial, 149, 864)
+        time.sleep(2)
+        # Step 3: if a board picker appears, tap the first/default board (~360, 480)
+        cmd_tap(serial, 360, 480)
+        time.sleep(1.5)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        print('save action completed (menu → Save → first board)')
+        return
+
+    if args.pinter_cmd == 'search-and-save':
+        """Full flow: search → submit → open first result → menu → Save."""
+        ss = args.screenshot or '/root/redroid-screens/pinter-save-flow.png'
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, 'search')
+        time.sleep(1)
+        cmd_tap(serial, args.x or 360, args.y or 118)
+        time.sleep(0.5)
+        cmd_clear(serial)
+        time.sleep(0.3)
+        cmd_text(serial, args.query)
+        time.sleep(0.5)
+        cmd_key(serial, 66)  # Enter to submit
+        time.sleep(4)
+        # tap first left-column result
+        cmd_tap(serial, 192, 450)
+        time.sleep(3)
+        # open action menu (top-right)
+        cmd_tap(serial, 660, 70)
+        time.sleep(1.5)
+        # tap Save
+        cmd_tap(serial, 149, 864)
+        time.sleep(2)
+        # tap first board in picker
+        cmd_tap(serial, 360, 480)
+        time.sleep(1.5)
+        cmd_screenshot(serial, ss)
+        print(f'search-and-save for "{args.query}" completed')
+        print(f'MEDIA:{ss}')
+        return
+
+    if args.pinter_cmd == 'create':
+        """Create a pin by sending an image via intent and saving to a board."""
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, 'create')
+        time.sleep(1.5)
+        # Tap "Pin" option at the bottom of the create panel
+        cmd_tap(serial, 185, 1093)
+        time.sleep(3)
+        # Permission dialogs (appops should have pre-granted)
+        # Gallery picker appears - but on this redroid, we use intent instead
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        print('create flow navigated (Create tab → Pin option)')
+        print('Tip: Use "pinter create-from-image" to bypass gallery picker')
+        return
+
+    if args.pinter_cmd == 'create-from-image':
+        """Share an image directly into Pinterest via intent, create board, save."""
+        image_uri = getattr(args, 'image_uri', None) or 'file:///storage/emulated/0/DCIM/Camera/square-pin.jpg'
+        board_name = getattr(args, 'board_name', None) or 'Test Board'
+
+        # Share image into Pinterest via intent
+        adb_shell(serial,
+            f'am start -a android.intent.action.SEND -t image/jpeg '
+            f'--eu android.intent.extra.STREAM {image_uri} '
+            f'com.pinterest 2>&1'
+        )
+        time.sleep(4)
+        # Now on board picker. Tap "+ Create board"
+        cmd_tap(serial, 222, 1104)
+        time.sleep(2)
+        # Switch to ADB keyboard and type board name
+        cmd_ime(serial, 'adb')
+        time.sleep(0.5)
+        cmd_tap(serial, 200, 340)
+        time.sleep(0.5)
+        cmd_clear(serial)
+        time.sleep(0.3)
+        cmd_text(serial, board_name, keep_ime=True)
+        time.sleep(0.5)
+        cmd_ime(serial, 'latin')
+        time.sleep(0.5)
+        # Tap Done/Create button (top-right area)
+        cmd_tap(serial, 640, 130)
+        time.sleep(2)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        print(f'Pin created and saved to "{board_name}" board!')
+        print(f'MEDIA:{getattr(args, "screenshot", "/root/redroid-screens/pinter-create-done.png")}')
+        return
+
+    if args.pinter_cmd == 'saved':
+        """Go to Saved tab, optionally switch sub-tab & search."""
+        pinter_ensure_foreground(serial)
+        pinter_tap_tab(serial, 'saved')
+        if args.sub_tab:
+            pinter_tap_saved_sub(serial, args.sub_tab)
+        if args.query:
+            time.sleep(1)
+            cmd_tap(serial, args.x or 300, args.y or 240)
+            time.sleep(0.5)
+            cmd_clear(serial)
+            time.sleep(0.3)
+            cmd_text(serial, args.query)
+            time.sleep(2)
+        if args.screenshot:
+            cmd_screenshot(serial, args.screenshot)
+        return
+
+    if args.pinter_cmd == 'screenshot':
+        path = args.path or f'/root/redroid-screens/pinter-{int(time.time())}.png'
+        cmd_screenshot(serial, path)
+        print(f'MEDIA:{path}')
+        return
+
+    if args.pinter_cmd == 'status':
+        cmd_activity(serial)
+        return
+
+    # fallback: show help
+    print_help()
+
+
+def print_help():
+    print("""Pinterest commands:
+  pinter open                     Launch Pinterest and open Home
+  pinter close                    Force-stop Pinterest
+  pinter tab <tab>                Navigate to a tab (home/search/create/inbox/saved)
+                                   --query "text"  type into search field
+  pinter search <query>           Search Pinterest (submits with Enter)
+                                   --no-submit  keep suggestions, don't search
+  pinter query <query>            Type query into the active search field
+  pinter open-pin <query>         Search → submit → open result from image grid
+                                   --nth N  open result N (odd=left, even=right col)
+  pinter save                     Save currently open pin (tap menu → Save)
+  pinter search-and-save <query>  Full flow: search → open 1st → Save via menu
+  pinter create                   Go to Create tab → tap Pin option
+                                   Tip: gallery picker may need images in DCIM/Camera
+  pinter create-from-image        Full flow: share image via intent → create board → save
+                                   --board "Name"   board to create (default: Test Board)
+                                   --image-uri <uri>  Android file path
+  pinter saved                    Go to Saved tab
+                                   --sub-tab pins|boards|collages
+                                   --query "text"  search within saved
+  pinter screenshot [path]        Take a proof screenshot
+  pinter status                   Check if Pinterest is in foreground
+      --screenshot path  save a screenshot at each step (auto-verified)
+""")
+
+
+def build_pinter_parser(sub):
+    sp = sub.add_parser('pinterest', aliases=['pinter'], help='Pinterest automation shortcuts')
+    sp_sub = sp.add_subparsers(dest='pinter_cmd', required=True)
+
+    def add_common(p):
+        p.add_argument('--screenshot', help='Save a screenshot')
+        p.add_argument('--x', type=int, default=None, help='Override X coordinate')
+        p.add_argument('--y', type=int, default=None, help='Override Y coordinate')
+
+    # pinter open
+    p = sp_sub.add_parser('open', help='Launch Pinterest and go to Home')
+    add_common(p)
+
+    # pinter close
+    p = sp_sub.add_parser('close', help='Force-stop Pinterest')
+    add_common(p)
+
+    # pinter tab <tab>
+    p = sp_sub.add_parser('tab', help='Navigate to a bottom tab')
+    p.add_argument('tab', choices=list(PINTEREST_TABS))
+    p.add_argument('--query', help='Type query after navigating')
+    add_common(p)
+
+    # pinter search <query>
+    p = sp_sub.add_parser('search', help='Search Pinterest')
+    p.add_argument('query', help='Search query')
+    p.add_argument('--no-submit', action='store_true', help='Keep suggestions visible, do not submit')
+    add_common(p)
+
+    # pinter query <text>
+    p = sp_sub.add_parser('query', help='Type text into active search field')
+    p.add_argument('query', help='Text to type')
+    add_common(p)
+
+    # pinter open-pin
+    p = sp_sub.add_parser('open-pin', help='Search + open a result')
+    p.add_argument('query', nargs='?', default=None, help='Search query (omit to use current screen)')
+    p.add_argument('--nth', type=int, default=1, help='Result index (1-4)')
+    add_common(p)
+
+    # pinter save
+    p = sp_sub.add_parser('save', help='Save the currently open pin via action menu')
+    add_common(p)
+
+    # pinter search-and-save
+    p = sp_sub.add_parser('search-and-save', help='Search → open 1st result → Save via menu')
+    p.add_argument('query', help='Search query')
+    add_common(p)
+
+    # pinter create
+    p = sp_sub.add_parser('create', help='Go to Create tab and open create-pin options')
+    p.add_argument('--use-first-image', action='store_true', help='If gallery opens, select first image')
+    add_common(p)
+
+    # pinter create-from-image
+    p = sp_sub.add_parser('create-from-image', help='Share image via intent → create board → save pin')
+    p.add_argument('--board', default='Test Board', help='Board name to create')
+    p.add_argument('--image-uri', default='file:///storage/emulated/0/DCIM/Camera/square-pin.jpg',
+                    help='Image file URI in Android')
+    add_common(p)
+
+    # pinter saved
+    p = sp_sub.add_parser('saved', help='Go to Saved tab')
+    p.add_argument('--sub-tab', choices=list(SAVED_SUB_TABS), help='Pins|Boards|Collages')
+    p.add_argument('--query', help='Search within saved')
+    add_common(p)
+
+    # pinter screenshot
+    p = sp_sub.add_parser('screenshot', help='Take a proof screenshot')
+    p.add_argument('path', nargs='?', help='Output path')
+
+    # pinter status
+    sp_sub.add_parser('status', help='Check foreground activity')
+
+    return sp
+
+
+# ── Main ─────────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(description='Lightweight redroid/ADB helper')
+    p.add_argument('--serial', default=DEFAULT_SERIAL)
+    sub = p.add_subparsers(dest='cmd', required=True)
+
+    sub.add_parser('activity')
+    sp = sub.add_parser('screenshot'); sp.add_argument('path')
+    sp = sub.add_parser('tap'); sp.add_argument('x', type=int); sp.add_argument('y', type=int)
+    sp = sub.add_parser('swipe'); sp.add_argument('x1', type=int); sp.add_argument('y1', type=int); sp.add_argument('x2', type=int); sp.add_argument('y2', type=int); sp.add_argument('--ms', type=int, default=300)
+    sp = sub.add_parser('text'); sp.add_argument('text'); sp.add_argument('--keep-ime', action='store_true')
+    sp = sub.add_parser('clear-text'); sp.add_argument('--keep-ime', action='store_true')
+    sp = sub.add_parser('key'); sp.add_argument('code', type=int)
+    sp = sub.add_parser('editor'); sp.add_argument('code', type=int)
+    sp = sub.add_parser('open'); sp.add_argument('package'); sp.add_argument('--activity')
+    sub.add_parser('disable-animations')
+    sp = sub.add_parser('ime'); sp.add_argument('mode', choices=['current', 'adb', 'latin', 'list'])
+
+    # Pinterest subcommand
+    build_pinter_parser(sub)
+
+    args = p.parse_args()
+    s = args.serial
+
+    if args.cmd == 'activity':
+        cmd_activity(s)
+    elif args.cmd == 'screenshot':
+        cmd_screenshot(s, args.path)
+    elif args.cmd == 'tap':
+        cmd_tap(s, args.x, args.y)
+    elif args.cmd == 'swipe':
+        cmd_swipe(s, args.x1, args.y1, args.x2, args.y2, args.ms)
+    elif args.cmd == 'text':
+        cmd_text(s, args.text, keep_ime=args.keep_ime)
+    elif args.cmd == 'clear-text':
+        cmd_clear(s, keep_ime=args.keep_ime)
+    elif args.cmd == 'key':
+        cmd_key(s, args.code)
+    elif args.cmd == 'editor':
+        cmd_editor(s, args.code)
+    elif args.cmd == 'open':
+        cmd_open(s, args.package, args.activity)
+    elif args.cmd == 'disable-animations':
+        cmd_disable_animations(s)
+    elif args.cmd == 'ime':
+        cmd_ime(s, args.mode)
+    elif args.cmd in ('pinterest', 'pinter'):
+        pinter_cmd(s, args)
+    else:
+        p.print_help()
+
+
+if __name__ == '__main__':
+    main()

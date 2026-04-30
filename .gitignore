@@ -1,0 +1,17 @@
+# Screenshots — large, generated, not needed in repo
+images/screenshots/
+
+# Android data volume (created by docker compose)
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary images
+*.tmp.jpg
