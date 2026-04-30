@@ -1,7 +1,4 @@
-# Screen Coordinates Reference (720×1280)
-
-These coordinates are for `redroid/redroid:12.0.0_64only-latest` at 720×1280 resolution.
-If you change the resolution, all coordinates need recalibration.
+# Screen Coordinates Reference (720×1280) — Pinterest 14.9.0
 
 ## Bottom Navigation Bar (y=1149–1181)
 
@@ -28,34 +25,25 @@ If you change the resolution, all coordinates need recalibration.
 | Boards   | 359 |
 | Collages | 540 |
 
-## Pin Detail → Save
+## Pin Detail → Save (Updated for 14.9.0)
 
-1. Tap top-right corner: **(660, 70)** → opens action menu
-2. Tap "Save" option: **(149, 864)**
-3. Tap first board in picker: **(360, 480)**
+1. Tap **Save pill button**: **(600, 950)** on the pin detail overlay
+2. Board picker appears — tap **first board in list**: **(360, 930)**
 
 ## Create Tab
 
-Options at y=1077–1108:
 - **Pin**: (185, 1093)
 - **Collage**: (360, 1093)
 - **Board**: (536, 1093)
 
 ## Board Creation
 
-- "+ Create board" button: **(222, 1104)**
-- Board name input field: tap **(200, 340)**
-- Done / confirm: tap **(640, 130)**
+- "+ Create board": **(222, 1104)**
+- Board name input: tap **(200, 340)**
+- Done / confirm: **(640, 130)**
 
-## Gallery Picker (Create Pin flow)
+## Known Issues
 
-- First image thumbnail: **(120, 480)**
-- "Next" button: **(660, 100)**
-- Title field: **(200, 600)**
-- "Pick a board" option: **(180, 620)**
-- "Create" / Post button: **(360, 1130)**
-
-## Known Coordinate Issues
-
-- **Save-to-board picker**: Board list items are unreliable to tap via coordinates — the image preview intercepts taps. Use the Create tab → gallery picker flow as a workaround.
-- **Post button**: In the create pin editor, the Post button position varies by Pinterest version. On 14.9.0 it's at the bottom after scrolling past "Advanced Settings".
+- ADB "device offline": disable `com.hagaseca.thost9`, set `service.adb.tcp.port=5555`
+- SEND intent create-from-image flow often fails ("Pin failed to upload") — use search-and-save instead
+- Gallery picker thumbnails may not display (media scanner issue on redroid)

@@ -289,22 +289,20 @@ def pinter_cmd(serial, args):
 
     if args.pinter_cmd == 'save':
         """Save the currently open pin via the action menu."""
-        # Step 1: tap top-right area (~660, 70) to open the action menu
-        cmd_tap(serial, 660, 70)
-        time.sleep(1.5)
-        # Step 2: tap "Save" option in the popup menu (~149, 864)
-        cmd_tap(serial, 149, 864)
+        # Updated for Pinterest 14.9.0:
+        # Step 1: tap the Save pill button (~600, 950) on the pin detail overlay
+        cmd_tap(serial, 600, 950)
+        time.sleep(2.5)
+        # Step 2: if a board picker appears, tap first board in the list (~360, 930)
+        cmd_tap(serial, 360, 930)
         time.sleep(2)
-        # Step 3: if a board picker appears, tap the first/default board (~360, 480)
-        cmd_tap(serial, 360, 480)
-        time.sleep(1.5)
         if args.screenshot:
             cmd_screenshot(serial, args.screenshot)
-        print('save action completed (menu → Save → first board)')
+        print('save action completed (Save pill → first board)')
         return
 
     if args.pinter_cmd == 'search-and-save':
-        """Full flow: search → submit → open first result → menu → Save."""
+        """Full flow: search → submit → open first result → Save pill → first board."""
         ss = args.screenshot or '/root/redroid-screens/pinter-save-flow.png'
         pinter_ensure_foreground(serial)
         pinter_tap_tab(serial, 'search')
@@ -320,14 +318,11 @@ def pinter_cmd(serial, args):
         # tap first left-column result
         cmd_tap(serial, 192, 450)
         time.sleep(3)
-        # open action menu (top-right)
-        cmd_tap(serial, 660, 70)
-        time.sleep(1.5)
-        # tap Save
-        cmd_tap(serial, 149, 864)
-        time.sleep(2)
+        # Save pill button on pin detail
+        cmd_tap(serial, 600, 950)
+        time.sleep(2.5)
         # tap first board in picker
-        cmd_tap(serial, 360, 480)
+        cmd_tap(serial, 360, 930)
         time.sleep(1.5)
         cmd_screenshot(serial, ss)
         print(f'search-and-save for "{args.query}" completed')
